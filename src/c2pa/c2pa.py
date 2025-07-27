@@ -42,6 +42,9 @@ _REQUIRED_FUNCTIONS = [
     'c2pa_signer_free',
     'c2pa_ed25519_sign',
     'c2pa_signature_free',
+    # EPUB Extension functions
+    'c2pa_get_epub_metadata',
+    'c2pa_free_epub_metadata',
 ]
 
 
@@ -215,6 +218,18 @@ class C2paBuilder(ctypes.Structure):
     """Opaque structure for builder context."""
     _fields_ = []  # Empty as it's opaque in the C API
 
+
+class CEpubMetadata(ctypes.Structure):
+    """C structure for EPUB metadata returned from Rust."""
+    _fields_ = [
+        ("title", ctypes.c_char_p),
+        ("author", ctypes.c_char_p),
+        ("language", ctypes.c_char_p),
+        ("publisher", ctypes.c_char_p),
+        ("description", ctypes.c_char_p),
+        ("date", ctypes.c_char_p),
+    ]
+
 # Helper function to set function prototypes
 
 
@@ -348,6 +363,12 @@ _setup_function(
     _lib.c2pa_signature_free, [
         ctypes.POINTER(
             ctypes.c_ubyte)], None)
+
+# Set up EPUB Extension function prototypes
+_setup_function(_lib.c2pa_get_epub_metadata,
+                [ctypes.c_char_p], ctypes.POINTER(CEpubMetadata))
+_setup_function(_lib.c2pa_free_epub_metadata,
+                [ctypes.POINTER(CEpubMetadata)], None)
 
 
 class C2paError(Exception):
@@ -2109,6 +2130,69 @@ def ed25519_sign(data: bytes, private_key: str) -> bytes:
     return signature
 
 
+def get_epub_metadata(epub_path: Union[str, Path]) -> dict:
+    """Get metadata from an EPUB file.
+
+    Args:
+        epub_path: Path to the EPUB file
+
+    Returns:
+        A dictionary containing EPUB metadata with keys:
+        - title: Book title
+        - author: Book author
+        - language: Book language
+        - publisher: Book publisher
+        - description: Book description
+        - date: Publication date
+
+    Raises:
+        C2paError: If there was an error reading the EPUB metadata
+        C2paError.Encoding: If the path contains invalid UTF-8 characters
+    """
+    try:
+        epub_path_str = str(epub_path).encode('utf-8')
+    except UnicodeError as e:
+        raise C2paError.Encoding(
+            f"Invalid UTF-8 characters in EPUB path: {str(e)}")
+
+    metadata_ptr = _lib.c2pa_get_epub_metadata(epub_path_str)
+    
+    if not metadata_ptr:
+        error = _parse_operation_result_for_error(_lib.c2pa_error())
+        if error:
+            raise C2paError(error)
+        raise C2paError("Failed to get EPUB metadata")
+    
+    try:
+        # Convert the C structure to Python dictionary
+        metadata = metadata_ptr.contents
+        
+        result = {}
+        
+        # Helper function to safely convert C string to Python string
+        def safe_c_string_to_python(c_str_ptr):
+            if c_str_ptr:
+                try:
+                    return ctypes.string_at(c_str_ptr).decode('utf-8')
+                except (UnicodeDecodeError, OSError):
+                    return None
+            return None
+        
+        # Extract all fields
+        result['title'] = safe_c_string_to_python(metadata.title)
+        result['author'] = safe_c_string_to_python(metadata.author)
+        result['language'] = safe_c_string_to_python(metadata.language)
+        result['publisher'] = safe_c_string_to_python(metadata.publisher)
+        result['description'] = safe_c_string_to_python(metadata.description)
+        result['date'] = safe_c_string_to_python(metadata.date)
+        
+        return result
+        
+    finally:
+        # Free the C-allocated metadata structure
+        _lib.c2pa_free_epub_metadata(metadata_ptr)
+
+
 __all__ = [
     'C2paError',
     'C2paSeekMode',
@@ -2124,5 +2208,6 @@ __all__ = [
     'sign_file',
     'format_embeddable',
     'version',
-    'sdk_version'
+    'sdk_version',
+    'get_epub_metadata'
 ]
